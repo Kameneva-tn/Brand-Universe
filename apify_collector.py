@@ -145,7 +145,7 @@ def collect_threads_posts(usernames: list[str], posts_limit: int = 20) -> list[d
 
     print(f"  🧵 Threads: збираю {len(usernames)} акаунтів...")
     try:
-        run = client.actor("apify/threads-scraper").call(run_input=run_input)
+        run = client.actor("curious_coder/threads-scraper").call(run_input=run_input)
 
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
             try:
