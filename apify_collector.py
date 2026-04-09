@@ -53,7 +53,7 @@ def collect_instagram_posts(usernames: list[str], posts_limit: int = 20) -> list
                 "thumbnail_url": item.get("displayUrl", ""),
                 "posted_at": _parse_ts(item.get("timestamp")),
                 "hashtags": _extract_hashtags(item.get("caption") or ""),
-                "followers_at_post": item.get("ownerFullName", ""),  # placeholder
+                "followers_at_post": str(item.get("owner", {}).get("followersCount") or item.get("ownerFollowersCount") or 0),
                 "collected_at": datetime.utcnow().isoformat(),
             }
             # Розраховуємо engagement rate якщо є дані по підписниках
@@ -145,7 +145,7 @@ def collect_threads_posts(usernames: list[str], posts_limit: int = 20) -> list[d
 
     print(f"  🧵 Threads: збираю {len(usernames)} акаунтів...")
     try:
-        run = client.actor("curious_coder/threads-scraper").call(run_input=run_input)
+        run = client.actor("apidojo/threads-scraper").call(run_input=run_input)
 
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
             try:
