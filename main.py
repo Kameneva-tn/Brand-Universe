@@ -2,13 +2,12 @@
 Brand Universal AI — Моніторинг-агент
 ======================================
 Запускається за розкладом (кожні N годин) або вручну.
-Збирає дані з Instagram/Facebook/Threads → ML-аналіз → Supabase.
+Збирає дані з Instagram/Facebook/Threads → ML-аналіз → Edge Function → БД.
 
 Запуск вручну:  python main.py
 Розклад:        автоматично через Railway Cron або schedule
 """
 import os
-import json
 import schedule
 import time
 from datetime import datetime
@@ -16,6 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Плоскі імпорти — всі файли в корені репозиторію
 from apify_collector import (
     collect_instagram_posts,
     collect_facebook_posts,
@@ -41,19 +41,18 @@ def run_monitoring_cycle(brand_id: str = "default"):
     Один повний цикл моніторингу:
     1. Збір постів з усіх платформ
     2. ML-аналіз
-    3. Збереження в Supabase
-    4. Генерація AI-інсайту
+    3. Генерація AI-інсайту
+    4. Збереження через Edge Function
     """
     started_at = datetime.utcnow()
     print(f"\n{'='*60}")
     print(f"🚀 Моніторинг-агент запущено: {started_at.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"{'='*60}\n")
 
-    # ── Зчитуємо конфіги ──────────────────────────────────────────
     ig_competitors = [u.strip() for u in os.getenv("INSTAGRAM_COMPETITORS", "").split(",") if u.strip()]
     fb_competitors = [u.strip() for u in os.getenv("FACEBOOK_COMPETITORS", "").split(",") if u.strip()]
     th_competitors = [u.strip() for u in os.getenv("THREADS_COMPETITORS", "").split(",") if u.strip()]
-    posts_limit = int(os.getenv("POSTS_PER_COMPETITOR", "20"))
+    posts_limit    = int(os.getenv("POSTS_LIMIT", "20"))
 
     all_posts = []
 
@@ -107,67 +106,36 @@ def run_monitoring_cycle(brand_id: str = "default"):
 
     # ── 3. AI ІНСАЙТ ──────────────────────────────────────────────
     print("\n✨ КРОК 3: Генерація AI-інсайту\n")
-    ai_text = generate_ai_insights(patterns, trends, anomalies)
-    print(f"  {ai_text[:200]}...")
+    try:
+        ai_text = generate_ai_insights(patterns, trends, anomalies)
+        print(f"  {ai_text[:200]}...")
+    except Exception as e:
+        ai_text = f"AI-інсайт недоступний: {e}"
+        print(f"  ⚠ {ai_text}")
 
-    # ── 4. ЗБЕРЕЖЕННЯ В SUPABASE ──────────────────────────────────
-    print("\n💾 КРОК 4: Збереження в Supabase\n")
+    # ── 4. ЗБЕРЕЖЕННЯ ЧЕРЕЗ EDGE FUNCTION ─────────────────────────
+    print("\n💾 КРОК 4: Збереження в базу даних\n")
 
-    upsert_competitor_posts(all_posts)
+    try:
+        upsert_competitor_posts(all_posts)
+    except Exception as e:
+        print(f"  ❌ Помилка збереження постів: {e}")
 
-    # Агреговані метрики по акаунту
-    metrics = _build_metrics(all_posts, patterns)
-    upsert_competitor_metrics(metrics)
+    try:
+        metrics = _build_metrics(all_posts, patterns)
+        upsert_competitor_metrics(metrics)
+    except Exception as e:
+        print(f"  ❌ Помилка збереження метрик: {e}")
 
-    # ML Insights
-    insights_to_save = []
-
-    # Зберігаємо аномалії як інсайти
-    for a in anomalies[:5]:
-        insights_to_save.append({
-            "brand_id": brand_id,
-            "insight_type": "anomaly",
-            "platform": a["platform"],
-            "username": a["username"],
-            "title": f"Вірусний пост @{a['username']}",
-            "body": f"ER {a['engagement_rate']}% (норма {a['avg_engagement']}%) — {a['caption_preview'][:150]}",
-            "url": a.get("post_url", ""),
-            "score": a.get("spike_factor", 0),
-            "created_at": datetime.utcnow().isoformat(),
-        })
-
-    # Зберігаємо зростаючі тренди
-    for trend in trends.get("rising", [])[:3]:
-        insights_to_save.append({
-            "brand_id": brand_id,
-            "insight_type": "trend",
-            "platform": "all",
-            "username": "",
-            "title": f"Зростаючий тренд #{trend['tag']}",
-            "body": f"Хештег #{trend['tag']} зріс: {trend['change']} за останній тиждень",
-            "url": "",
-            "score": trend.get("count", 0),
-            "created_at": datetime.utcnow().isoformat(),
-        })
-
-    # AI-інсайт
-    insights_to_save.append({
-        "brand_id": brand_id,
-        "insight_type": "ai_summary",
-        "platform": "all",
-        "username": "",
-        "title": "Щотижневий AI-аналіз конкурентів",
-        "body": ai_text,
-        "url": "",
-        "score": 0,
-        "created_at": datetime.utcnow().isoformat(),
-    })
-
-    insert_ml_insights(insights_to_save)
+    try:
+        insights_to_save = _build_insights(all_posts, anomalies, trends, ai_text, brand_id)
+        insert_ml_insights(insights_to_save)
+    except Exception as e:
+        print(f"  ❌ Помилка збереження інсайтів: {e}")
 
     duration = (datetime.utcnow() - started_at).total_seconds()
     print(f"\n{'='*60}")
-    print(f"✅ Цикл завершено за {duration:.1f}с | Збережено {len(insights_to_save)} інсайтів")
+    print(f"✅ Цикл завершено за {duration:.1f}с")
     print(f"{'='*60}\n")
 
 
@@ -206,16 +174,59 @@ def _build_metrics(posts: list[dict], patterns: dict) -> list[dict]:
     return metrics
 
 
-# ── ENTRY POINT ──────────────────────────────────────────────────────────────
+def _build_insights(posts, anomalies, trends, ai_text, brand_id) -> list[dict]:
+    """Формує список інсайтів для збереження."""
+    insights = []
+
+    for a in anomalies[:5]:
+        insights.append({
+            "brand_id": brand_id,
+            "insight_type": "anomaly",
+            "platform": a["platform"],
+            "username": a["username"],
+            "title": f"Вірусний пост @{a['username']}",
+            "body": f"ER {a['engagement_rate']}% (норма {a['avg_engagement']}%) — {a['caption_preview'][:150]}",
+            "url": a.get("post_url", ""),
+            "score": a.get("spike_factor", 0),
+            "created_at": datetime.utcnow().isoformat(),
+        })
+
+    for trend in trends.get("rising", [])[:3]:
+        insights.append({
+            "brand_id": brand_id,
+            "insight_type": "trend",
+            "platform": "all",
+            "username": "",
+            "title": f"Зростаючий тренд #{trend['tag']}",
+            "body": f"Хештег #{trend['tag']} зріс: {trend['change']} за останній тиждень",
+            "url": "",
+            "score": trend.get("count", 0),
+            "created_at": datetime.utcnow().isoformat(),
+        })
+
+    insights.append({
+        "brand_id": brand_id,
+        "insight_type": "ai_summary",
+        "platform": "all",
+        "username": "",
+        "title": "Щотижневий AI-аналіз конкурентів",
+        "body": ai_text,
+        "url": "",
+        "score": 0,
+        "created_at": datetime.utcnow().isoformat(),
+    })
+
+    return insights
+
+
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    hours = int(os.getenv("SCHEDULE_HOURS", "6"))
+    hours    = int(os.getenv("COLLECTION_INTERVAL_HOURS", "6"))
     brand_id = os.getenv("BRAND_ID", "default")
 
-    # Перший запуск одразу
     run_monitoring_cycle(brand_id)
 
-    # Далі за розкладом
     schedule.every(hours).hours.do(run_monitoring_cycle, brand_id=brand_id)
     print(f"⏰ Наступний запуск через {hours} год. Агент працює у фоні...\n")
 
