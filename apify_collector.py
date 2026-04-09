@@ -183,13 +183,19 @@ def collect_threads_posts(usernames: list[str], posts_limit: int = 20) -> list[d
 # ─── HELPERS ───────────────────────────────────────────────────────────────
 
 def _calc_engagement(likes: int, comments: int, views: int, followers: int) -> float:
-    """engagement rate = (likes + comments + shares) / followers * 100"""
-    total = likes + comments
+    """
+    Engagement rate з пріоритетом:
+    1. (likes + comments) / followers * 100  — якщо є підписники
+    2. (likes + comments) / views * 100      — якщо є перегляди (reels/video)
+    3. likes + comments                       — абсолютне значення як fallback
+    """
+    total = (likes or 0) + (comments or 0)
     if followers and followers > 0:
         return round(total / followers * 100, 4)
     if views and views > 0:
         return round(total / views * 100, 4)
-    return 0.0
+    # fallback: нормалізований показник без знаменника
+    return round(total / 1000, 4) if total > 0 else 0.0
 
 
 def _parse_ts(ts) -> str:
