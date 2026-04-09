@@ -16,12 +16,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from collectors.apify_collector import (
+from apify_collector import (
     collect_instagram_posts,
     collect_facebook_posts,
     collect_threads_posts,
 )
-from ml.analyzer import (
+from analyzer import (
     score_engagement,
     add_content_classification,
     analyze_posting_patterns,
@@ -29,7 +29,7 @@ from ml.analyzer import (
     detect_anomalies,
     generate_ai_insights,
 )
-from storage.supabase_client import (
+from supabase_client import (
     upsert_competitor_posts,
     upsert_competitor_metrics,
     insert_ml_insights,
